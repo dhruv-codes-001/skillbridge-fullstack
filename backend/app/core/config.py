@@ -22,25 +22,33 @@ class Settings(BaseSettings):
         return v
 
     # CORS
-    BACKEND_CORS_ORIGINS: List[str] = [
+    BACKEND_CORS_ORIGINS: Union[str, List[str]] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
 
-    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    @field_validator("BACKEND_CORS_ORIGINS", mode="after")
     @classmethod
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
-        if isinstance(v, str) and not v.startswith("["):
-            return [i.strip() for i in v.split(",") if i.strip()]
-        elif isinstance(v, str) and v.startswith("["):
-            return json.loads(v)
+        if isinstance(v, str):
+            clean = v.strip()
+            if not clean:
+                return []
+            if clean.startswith("["):
+                try:
+                    parsed = json.loads(clean)
+                    if isinstance(parsed, list):
+                        return [str(item).strip() for item in parsed if str(item).strip()]
+                except Exception:
+                    pass
+            return [origin.strip() for origin in clean.replace(";", ",").split(",") if origin.strip()]
         elif isinstance(v, list):
-            return v
+            return [str(origin).strip() for origin in v if str(origin).strip()]
         return []
 
     # Cookie security settings
-    COOKIE_SECURE: bool = False
     COOKIE_SAMESITE: str = "lax"
+    COOKIE_SECURE: bool = False
 
     @field_validator("COOKIE_SECURE", mode="after")
     @classmethod
