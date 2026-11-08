@@ -1,10 +1,16 @@
 import axios from "axios";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+const getApiBaseUrl = () => {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+  const trimmed = envUrl.trim().replace(/\/+$/, "");
+  if (!trimmed.endsWith("/api/v1")) {
+    return `${trimmed}/api/v1`;
+  }
+  return trimmed;
+};
 
 export const api = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: getApiBaseUrl(),
   withCredentials: true, // Sends and receives HttpOnly cookies automatically
   headers: {
     "Content-Type": "application/json",
