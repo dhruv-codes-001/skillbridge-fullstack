@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 from fastapi.testclient import TestClient
 
@@ -383,3 +384,104 @@ def test_tutor_details_public(client: TestClient):
     # 404 for non-existent tutor
     res_404 = client.get("/api/v1/tutors/99999")
     assert res_404.status_code == 404
+
+
+def test_marketplace_no_duplicate_tutors_with_multiple_offerings(client: TestClient):
+    """
+    Ensure tutors with multiple matching active offerings are not duplicated
+    in search_marketplace and count is accurate.
+    """
+    client.cookies.clear()
+    token = register_user(
+        client,
+        "multi_course_tutor@college.edu",
+        "tutor",
+        "Multi Course Guru",
+        college="IIT Bombay",
+        department="Computer Science",
+        teaching_subjects="Algorithms, Systems",
+        hourly_rate=600.0,
+    )
+    client.cookies.set("access_token", token)
+
+    # Create 3 active offerings for the same tutor matching "Algorithms"
+    for i in range(1, 4):
+        res = client.post(
+            "/api/v1/offerings",
+            json={
+                "title": f"Algorithms Mastery Module {i}",
+                "subject": "Algorithms",
+                "description": f"Deep dive part {i} into computational algorithms.",
+                "level": "Intermediate",
+                "hourly_rate": 600.0,
+            },
+        )
+        assert res.status_code == 201
+
+    client.cookies.clear()
+
+    # Query with subject filter matching all 3 offerings
+    res = client.get("/api/v1/tutors?subject=Algorithms")
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["full_name"] == "Multi Course Guru"
+    assert data["items"][0]["active_offerings_count"] == 3
+
+    # Query with search matching all 3 offerings
+    res_search = client.get("/api/v1/tutors?search=Algorithms")
+    assert res_search.status_code == 200
+    data_search = res_search.json()
+    assert data_search["total"] == 1
+    assert len(data_search["items"]) == 1
+
+
+def test_marketplace_postgresql_order_by_distinct_compliance(db_session):
+    """
+    PostgreSQL requires that for SELECT DISTINCT, every expression in ORDER BY
+    must appear in the SELECT target list:
+    'psycopg2.errors.InvalidColumnReference: for SELECT DISTINCT, ORDER BY expressions must appear in select list'
+    This regression test validates the query against the PostgreSQL dialect compiler.
+    """
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy import func, distinct
+    from app.models.user import User
+    from app.models.tutor_profile import TutorProfile
+    from app.models.offering import Offering
+
+    query = (
+        db_session.query(User)
+        .join(TutorProfile, User.id == TutorProfile.user_id)
+        .outerjoin(Offering, (Offering.tutor_id == User.id) & (Offering.is_active == True))
+        .filter(User.role == "tutor", User.is_active == True)
+    )
+
+    # 1. Validate count query compiles cleanly
+    count_stmt = query.with_entities(func.count(distinct(User.id))).statement
+    count_sql = str(count_stmt.compile(dialect=postgresql.dialect()))
+    assert "count(DISTINCT users.id)" in count_sql
+
+    # 2. Validate paginated query compiles with SELECT DISTINCT and ORDER BY expressions in SELECT list
+    tutor_rows_stmt = (
+        query.with_entities(User.id, TutorProfile.average_rating, User.full_name)
+        .distinct()
+        .order_by(TutorProfile.average_rating.desc(), User.full_name.asc())
+        .offset(0)
+        .limit(10)
+        .statement
+    )
+    sql = str(tutor_rows_stmt.compile(dialect=postgresql.dialect()))
+
+    # Verify DISTINCT is used
+    assert "SELECT DISTINCT " in sql
+    parts = re.split(r"\s+FROM\s+", sql, maxsplit=1, flags=re.IGNORECASE)
+    assert len(parts) == 2
+    select_clause, from_clause = parts
+
+    # Critical PostgreSQL requirement: expressions in ORDER BY must appear in SELECT list
+    assert "tutor_profiles.average_rating" in select_clause
+    assert "users.full_name" in select_clause
+    assert "ORDER BY tutor_profiles.average_rating DESC, users.full_name ASC" in sql
+

@@ -2,7 +2,7 @@ import math
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import distinct, func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.db.session import get_db
 from app.models.offering import Offering
@@ -118,17 +118,31 @@ def search_marketplace(
             )
         )
 
-    # Unique tutor users
-    distinct_query = query.distinct()
-    total_count = distinct_query.count()
+    # Unique tutor users (PostgreSQL & SQLite compatible)
+    total_count = query.with_entities(func.count(distinct(User.id))).scalar() or 0
 
     offset = (page - 1) * size
-    tutors = (
-        distinct_query.order_by(TutorProfile.average_rating.desc(), User.full_name.asc())
+    tutor_rows = (
+        query.with_entities(User.id, TutorProfile.average_rating, User.full_name)
+        .distinct()
+        .order_by(TutorProfile.average_rating.desc(), User.full_name.asc())
         .offset(offset)
         .limit(size)
         .all()
     )
+
+    tutor_ids = [row[0] for row in tutor_rows]
+    if tutor_ids:
+        user_list = (
+            db.query(User)
+            .options(joinedload(User.tutor_profile), selectinload(User.offerings))
+            .filter(User.id.in_(tutor_ids))
+            .all()
+        )
+        user_map = {u.id: u for u in user_list}
+        tutors = [user_map[tid] for tid in tutor_ids if tid in user_map]
+    else:
+        tutors = []
 
     items: List[TutorMarketplaceCard] = []
     for tutor in tutors:
